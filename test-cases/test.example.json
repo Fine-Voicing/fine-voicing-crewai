@@ -1,0 +1,11 @@
+{
+    "voice_model": {
+        "provider": "openai",
+        "model": "realtime",
+        "voice": "alloy",
+        "api_key": "your_api_key_here"
+    },
+    "instructions": "You're an helpful assistant speaking with a human being or an AI assistant",
+    "test_mode": "text",
+    "turns": 1
+}

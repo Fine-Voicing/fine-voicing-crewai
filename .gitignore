@@ -1,4 +1,5 @@
 logs/
 .vscode
-test-cases/
+test-cases/*
+!test-cases/test.example.json
 __pycache__
