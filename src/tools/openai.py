@@ -9,6 +9,7 @@ import logging
 class OpenAIRealtime(BaseTool):
     name: str = "OpenAI Realtime"
     description: str = "Use the OpenAI Realtime API to generate a single response for a conversation."
+    
     def __init__(
         self, 
         api_key: str,

@@ -2,8 +2,8 @@ import logging
 import os
 import json
 from crewai import Agent, Task, Crew, Process
-from tools import utils
-import concurrent.futures
+from tools import utils, openai
+import asyncio
 from typing import List, Dict
 from constants import LOGGER_MAIN, TEST_CASES_DIR, LOGGER_TEST_CASE_FILE_PATTERN 
 
@@ -17,34 +17,30 @@ class TestRunner:
         self.test_case_definitions = {}
         self._setup_agents()
 
-    def run_test_cases(self, test_dir: str = TEST_CASES_DIR) -> Dict[str, List[str]]:
+    async def run_test_cases(self, test_dir: str = TEST_CASES_DIR) -> Dict[str, List[str]]:
         test_cases_dir = os.path.join(os.path.dirname(__file__), test_dir)
-        test_case_files = [os.path.join(test_cases_dir, f) for f in os.listdir(test_cases_dir) if os.path.isfile(os.path.join(test_cases_dir, f))]
+        test_case_files = [os.path.join(test_cases_dir, f) for f in os.listdir(test_cases_dir) if os.path.isfile(os.path.join(test_cases_dir, f)) and not f.endswith('example.json')]
         
         transcripts = {}
-        futures = []
-        future_to_name = {}
+        tasks = []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(test_case_files)) as executor:
-            for test_case_file in test_case_files:
-                test_case_name = os.path.splitext(os.path.basename(test_case_file))[0]
-                self.test_case_loggers[test_case_name] = utils.setup_logging(test_case_name, debug=self.debug, file_pattern=LOGGER_TEST_CASE_FILE_PATTERN, test_case_name=test_case_name, console_output=False)
-                with open(test_case_file) as f:
-                    test_case = json.load(f)
-                    self.test_case_definitions[test_case_name] = test_case
-                    self.logger.info(f"--- Test case: {test_case_name} submitted for execution ---")
-                    future = executor.submit(self.run_test_case, test_case_name)
-                    future_to_name[future] = test_case_name
-                    futures.append(future)
-                    
-            for future in concurrent.futures.as_completed(futures):
-                test_case_name = future_to_name[future]
-                transcript = future.result()
-                transcripts[test_case_name] = transcript
-                self.logger.info(f"--- Transcript for test case: {test_case_name} ---")
-                [self.logger.info(line) for line in transcript]
-                self.logger.info(f"--- End transcript for test case: {test_case_name} ---")
-                self.logger.info(f"--- Test case: {test_case_name} completed ---")
+        for test_case_file in test_case_files:
+            test_case_name = os.path.splitext(os.path.basename(test_case_file))[0]
+            self.test_case_loggers[test_case_name] = utils.setup_logging(test_case_name, debug=self.debug, file_pattern=LOGGER_TEST_CASE_FILE_PATTERN, test_case_name=test_case_name, console_output=False)
+            with open(test_case_file) as f:
+                test_case = json.load(f)
+                self.test_case_definitions[test_case_name] = test_case
+                self.logger.info(f"--- Test case: {test_case_name} submitted for execution ---")
+                tasks.append(self.run_test_case(test_case_name))
+        
+        results = await asyncio.gather(*tasks)
+        
+        for test_case_name, transcript in zip([os.path.splitext(os.path.basename(f))[0] for f in test_case_files], results):
+            transcripts[test_case_name] = transcript
+            self.logger.info(f"--- Transcript for test case: {test_case_name} ---")
+            [self.logger.info(line) for line in transcript]
+            self.logger.info(f"--- End transcript for test case: {test_case_name} ---")
+            self.logger.info(f"--- Test case: {test_case_name} completed ---")
 
         return transcripts
 
@@ -74,7 +70,8 @@ class TestRunner:
                 "Instructions: {instructions}"
                 "Based on the instructions, identify the roles (at least two) involved in the conversation."
                 "Based on the instructions, generate a specific set of instructions for each role."
-                "Format as a JSON array, where each item has keys: role_name, role_prompt. Output only valid JSON."
+                "Based on the instructions, identify the role to be tested amongst the roles you've identified."
+                "Format as a JSON array, where each item has keys: role_name, role_prompt, is_tested_role. Output only valid JSON. No markdown or other formatting."
             ),
             expected_output="A JSON object with the roles and their descriptions.",
             agent=self.conversation_generator,
@@ -94,7 +91,7 @@ class TestRunner:
 
         return roles
 
-    def run_test_case(self, test_case_name):
+    async def run_test_case(self, test_case_name):
         logger = self.test_case_loggers[test_case_name]
         test_case = self.test_case_definitions[test_case_name]
 
@@ -117,6 +114,16 @@ class TestRunner:
             tasks=[moderate_message],
         )
 
+        openai_ws = openai.OpenAIRealtime(
+            api_key=os.environ['OPENAI_API_KEY'],
+            # model=test_case['model'],
+            # voice=test_case['voice'],
+            instructions=test_case['instructions'],
+            logger=logger
+        )
+
+        await openai_ws.connect()
+
         roles = self._generate_roles(test_case_name)
         generate_tasks = []
         for role in roles:
@@ -132,7 +139,8 @@ class TestRunner:
                     ),
                     expected_output="A single conversational message, responding to the previous message.",
                     agent=self.conversation_generator,
-                    context=generate_tasks[-1:] if generate_tasks else []
+                    context=generate_tasks[-1:] if generate_tasks else [],
+                    tools=[openai_ws.create_response] if role.get('is_tested_role', False) else []
                 )
             generate_tasks.append(generate_task)
 
@@ -142,7 +150,10 @@ class TestRunner:
             process=Process.sequential
         )
 
-        return self._converse(test_case_name, generate_crew, moderate_crew)
+        transcript = self._converse(test_case_name, generate_crew, moderate_crew)
+        await openai_ws.close()
+
+        return transcript
     
     def _converse(self, test_case_name: str, generate_crew, moderate_crew):
         logger = self.test_case_loggers[test_case_name]
