@@ -42,6 +42,12 @@ class UltraVoxClient():
                 join_url
             )
 
+            set_output_medium = {
+                "type": "set_output_medium",
+                "medium": "text"
+            }
+            await self.ws.send(json.dumps(set_output_medium))
+
     async def _fetch_join_url(self):
         url = f'{ULTRAVOX_BASE_URL}/api/calls'
         headers = {
@@ -81,19 +87,12 @@ class UltraVoxClient():
     async def send_message(self, message: dict):
         """Send a message through the WebSocket connection synchronously."""
         self.logger.info(f"Sending message to UltraVox: {message}")
-        
-        set_output_medium = {
-            "type": "set_output_medium",
-            "medium": "text"
-        }
 
         conversation_event = {
             "type": "input_text_message",
             "text": message
         }
 
-        # Request response creation
-        await self.ws.send(json.dumps(set_output_medium))
         await self.ws.send(json.dumps(conversation_event))
 
         full_response = ""
