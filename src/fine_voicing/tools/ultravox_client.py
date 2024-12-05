@@ -35,9 +35,9 @@ class UltraVoxClient():
     async def connect(self):
         """Establish WebSocket connection with Ultravox."""
         if not self.ws:
-            self.logger.info("Opening websocket connection to Ultravox")
-
             join_url = await self._fetch_join_url()
+            self.logger.info(f"Opening websocket connection to Ultravox at {join_url}")
+            
             self.ws = await websockets.connect(
                 join_url,
                 logger=self.logger
