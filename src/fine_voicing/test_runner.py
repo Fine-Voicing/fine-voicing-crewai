@@ -140,7 +140,7 @@ class TestRunner:
         if not tested_role or not testing_role:
             raise ValueError("No tested role or testing role identified")
 
-        provider = Provider.ULTRAVOX
+        provider = Provider(test_case['voice_model']['provider'])
         openai_thread = VoiceAIModelThread(tested_role['role_prompt'], logger, provider=provider, first_speaker=ULTRAVOX_FIRST_SPEAKER_USER)
 
         generate_task_tested = Task(
