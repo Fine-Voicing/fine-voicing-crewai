@@ -2,10 +2,11 @@ import logging
 import os
 import json
 from crewai import Agent, Task, Crew, Process
-from tools import utils, openai
+from fine_voicing.tools import utils, openai, ultravox
 import asyncio
 from typing import List, Dict
-from constants import LOGGER_MAIN, TEST_CASES_DIR, LOGGER_TEST_CASE_FILE_PATTERN 
+from fine_voicing.tools.constants import LOGGER_MAIN, TEST_CASES_DIR, LOGGER_TEST_CASE_FILE_PATTERN, ULTRAVOX_FIRST_SPEAKER_USER, EMPTY_HISTORY
+from fine_voicing.tools.voice_ai_model_thread import VoiceAIModelThread, Provider
 
 class TestRunner:
     def __init__(self, debug=False):
@@ -45,12 +46,12 @@ class TestRunner:
         return transcripts
 
     def _setup_agents(self):
-        self.openai_realtime_agent = Agent(
-            role="OpenAI Realtime API Agent",
-            goal="Use the OpenAI Realtime API to generate conversations.",
+        self.voice_ai_model_agent = Agent(
+            role="Voice AI Model Agent",
+            goal="Use the Voice AI Model to generate conversations.",
             verbose=True,
             memory=True,
-            backstory="You specialize in using the OpenAI Realtime API to generate conversational messages.",
+            backstory="You specialize in using Voice AI Models to generate conversational messages.",
         )
 
         self.conversation_generator = Agent(
@@ -139,26 +140,31 @@ class TestRunner:
         if not tested_role or not testing_role:
             raise ValueError("No tested role or testing role identified")
 
-        openai_thread = openai.OpenAIRealtimeClientThread(tested_role['role_prompt'], logger)
+        provider = Provider.ULTRAVOX
+        openai_thread = VoiceAIModelThread(tested_role['role_prompt'], logger, provider=provider, first_speaker=ULTRAVOX_FIRST_SPEAKER_USER)
 
         generate_task_tested = Task(
             description=(
-                "Use the OpenAI Realtime API Client tool to generate the next message in the conversation."
-                f"Provide the role_name parameter of the OpenAI Realtime Client tool: {tested_role['role_name']}"
-                "Provide the last_message parameter of the OpenAI Realtime Client tool from the chat history - each message is prefixed with a dash (-): {chat_history}"
+                f"Use the {provider.value} Client tool to generate the next message in the conversation."
+                f"Provide the role_name parameter of the {provider.value} Client tool: {tested_role['role_name']}"
+                f"For Ultravox, when the chat history is {EMPTY_HISTORY}, last_message should be a message generated from the role prompt {tested_role['role_prompt']}."
+                f"Otherwise, provide the last_message parameter of the {provider.value} client tool from the chat history."
+                "Chat history, each message is prefixed with a dash (-):"
+                "{chat_history}"
             ),
-            expected_output="The response from the OpenAI Realtime API Client tool.",
-            agent=self.openai_realtime_agent,
-            tools=[openai.OpenAIRealtimeTool(result_as_answer=True)],
+            expected_output=f"The response from the {provider.value} Client tool.",
+            agent=self.voice_ai_model_agent,
+            tools=[openai.OpenAIRealtimeTool(result_as_answer=True), ultravox.UltraVoxTool(result_as_answer=True)],
         )
-
         generate_task_testing = Task(
             description=(
-                "Generate the next message in the conversation, based on the chat history - each message is prefixed with a dash (-): {chat_history}."
+                "Generate the next message in the conversation, based on the chat history." 
                 f"Play role in the conversation: {testing_role['role_name']}."
                 f"Follow these instructions: {testing_role['role_prompt']}."
                 f"Prefix all messages with the role name: {testing_role['role_name']}."
                 f"Ensure the response is in {test_case['language']} and adheres to the context of the conversation."
+                "Chat history, each message is prefixed with a dash (-):"
+                "{chat_history}"
             ),
             expected_output="A single conversational message, responding to the previous message.",
             agent=self.conversation_generator,
@@ -175,7 +181,7 @@ class TestRunner:
         test_case = self.test_case_definitions[test_case_name]
         
         generate_tested_crew = Crew(
-            agents=[self.openai_realtime_agent],
+            agents=[self.voice_ai_model_agent],
             tasks=[generate_task_tested],
             process=Process.sequential
         )
@@ -224,4 +230,4 @@ class TestRunner:
         return transcript
     
     def _format_transcript(self, transcript: List[str]) -> str:
-        return "\n".join(f"- {line}" for line in transcript) if len(transcript) > 0 else "[EMPTY HISTORY]"
+        return "\n".join(f"- {line}" for line in transcript) if len(transcript) > 0 else EMPTY_HISTORY

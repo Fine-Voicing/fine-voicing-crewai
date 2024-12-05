@@ -1,7 +1,7 @@
-from test_runner import TestRunner
-from tools import utils
+from fine_voicing.test_runner import TestRunner
+from fine_voicing.tools import utils
 from argparse import ArgumentParser
-from constants import LOGGER_MAIN, LOGGER_SESSION_FILE_PATTERN
+from fine_voicing.tools.constants import LOGGER_MAIN, LOGGER_SESSION_FILE_PATTERN
 import asyncio
 
 parser = ArgumentParser()
