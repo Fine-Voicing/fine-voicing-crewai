@@ -221,7 +221,7 @@ class TestRunner:
         should_terminate = False
         index_turn = 1
         while not should_terminate and index_turn <= test_case['turns']:
-            formatted_transcript = "\n".join(f"- {line}" for line in transcript)
+            formatted_transcript = "\n".join(f"- {line}" for line in transcript) if len(transcript) > 0 else "[EMPTY HISTORY]"
             logger.info(f"--- Starting turn {index_turn} ---")
             result = generate_crew.kickoff({"chat_history": formatted_transcript})
             [transcript.append(task.raw) for task in result.tasks_output]
