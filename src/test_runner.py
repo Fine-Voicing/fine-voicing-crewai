@@ -45,9 +45,17 @@ class TestRunner:
         return transcripts
 
     def _setup_agents(self):
+        self.openai_realtime_agent = Agent(
+            role="OpenAI Realtime API Agent",
+            goal="Use the OpenAI Realtime API to generate conversations.",
+            verbose=True,
+            memory=True,
+            backstory="You specialize in using the OpenAI Realtime API to generate conversational messages.",
+        )
+
         self.conversation_generator = Agent(
             role="Conversation Voice Simulation Agent",
-            goal="Generate a single response in the conversation. Voice conversation are often brief and likely to be interrupted by the other person",
+            goal="Generate conversational messages in a voice conversation with an AI assistant.",
             verbose=True,
             memory=True,
             backstory="You specialize in simulating human-like voice interactions, and refining AI prompts.",
@@ -64,17 +72,25 @@ class TestRunner:
     def _generate_roles(self, test_case_name: str) -> dict:
         logger = self.test_case_loggers[test_case_name]
         test_case = self.test_case_definitions[test_case_name]
+
+        conversation_roles_agent = Agent(
+            role="Conversation Roles Generator",
+            goal="Generate the roles and instructions for a conversation based on the provided instructions.",
+            verbose=True,
+            memory=True,
+            backstory="You specialize in generating the roles and instructions for a conversation based on the provided instructions.",
+        )
         
         generate_roles_task = Task(
             description=(
                 "Instructions: {instructions}"
                 "Based on the instructions, identify the roles (at least two) involved in the conversation."
-                "Based on the instructions, generate a specific set of instructions for each role."
+                "Based on the instructions, generate a specific set of instructions for each role. Make sure to include the target language in the instructions."
                 "Based on the instructions, identify the role to be tested amongst the roles you've identified."
                 "Format as a JSON array, where each item has keys: role_name, role_prompt, is_tested_role. Output only valid JSON. No markdown or other formatting."
             ),
             expected_output="A JSON object with the roles and their descriptions.",
-            agent=self.conversation_generator,
+            agent=conversation_roles_agent,
         )
 
         generate_roles_crew = Crew(
@@ -99,7 +115,7 @@ class TestRunner:
         logger.info(f"--- Test case: {test_case_name} starting ---")
         logger.debug(f"Test case definition: {test_case}")
 
-        moderate_message = Task(
+        moderate_task = Task(
             description=(
                 "Evaluate the conversation history up to this point: {chat_history} "
                 "Decide if the conversation should continue or terminate. Provide reasoning for the decision."
@@ -109,129 +125,92 @@ class TestRunner:
             agent=self.moderator,
         )
 
-        moderate_crew = Crew(
-            agents=[self.moderator],
-            tasks=[moderate_message],
-        )
-
-        
-        #await openai_ws.connect()
-
         roles = self._generate_roles(test_case_name)
         generate_tasks = []
 
         tested_role = None
         testing_role = None
         for role in roles:
-            if role['is_tested_role']:
+            if role.get('is_tested_role', False):
                 tested_role = role
             else:
                 testing_role = role
 
-        testing_generate_task = Task(
+        if not tested_role or not testing_role:
+            raise ValueError("No tested role or testing role identified")
+
+        openai_thread = openai.OpenAIRealtimeClientThread(tested_role['role_prompt'], logger)
+
+        generate_task_tested = Task(
+            description=(
+                "Use the OpenAI Realtime API Client tool to generate the next message in the conversation."
+                f"Provide the role_name parameter of the OpenAI Realtime Client tool: {tested_role['role_name']}"
+                "Provide the last_message parameter of the OpenAI Realtime Client tool from the chat history - each message is prefixed with a dash (-): {chat_history}"
+            ),
+            expected_output="The response from the OpenAI Realtime API Client tool.",
+            agent=self.openai_realtime_agent,
+            tools=[openai.OpenAIRealtimeTool(result_as_answer=True)],
+        )
+
+        generate_task_testing = Task(
             description=(
                 "Generate the next message in the conversation, based on the chat history - each message is prefixed with a dash (-): {chat_history}."
                 f"Play role in the conversation: {testing_role['role_name']}."
                 f"Follow these instructions: {testing_role['role_prompt']}."
+                f"Prefix all messages with the role name: {testing_role['role_name']}."
                 f"Ensure the response is in {test_case['language']} and adheres to the context of the conversation."
             ),
             expected_output="A single conversational message, responding to the previous message.",
             agent=self.conversation_generator,
         )
 
-        openai_ws = openai.OpenAIRealtime(
-            api_key=os.environ['OPENAI_API_KEY'],
-            # model=test_case['model'],
-            # voice=test_case['voice'],
-            instructions=tested_role['role_prompt'],
-            logger=logger
-        )
+        transcript = self._converse(test_case_name, generate_task_tested, generate_task_testing, moderate_task)
 
-        tested_generate_task = Task(
-            description=(
-                "Use the OpenAI Realtime API Client tool to generate the next message in the conversation."
-                #"Fetch the instruction from the task configuration, and provide it as the instructions parameter."
-                "Provide the last_message parameter of the OpenAI Realtime Client tool from the chat history - each message is prefixed with a dash (-): {chat_history}"
-            ),
-            # config={
-            #     "instructions": role['role_prompt']
-            # },
-            expected_output="The response from the OpenAI Realtime API Client tool.",
-            agent=self.conversation_generator,
-            tools=[openai_ws],
-            async_execution=True
-        )
+        openai_thread.stop()
+
+        return transcript
+    
+    def _converse(self, test_case_name: str, generate_task_tested, generate_task_testing, moderate_task):
+        logger = self.test_case_loggers[test_case_name]
+        test_case = self.test_case_definitions[test_case_name]
         
-        # for role in roles:
-        #     logger.info(f"Generating task for role: {role}")
-        #     if role.get('is_tested_role', False):
-        #         openai_ws = openai.OpenAIRealtime(
-        #             api_key=os.environ['OPENAI_API_KEY'],
-        #             # model=test_case['model'],
-        #             # voice=test_case['voice'],
-        #             instructions=role['role_prompt'],
-        #             logger=logger
-        #         )
-
-        #         generate_task = Task(
-        #             description=(
-        #                 "Use the OpenAI Realtime API Client tool to generate the next message in the conversation."
-        #                 #"Fetch the instruction from the task configuration, and provide it as the instructions parameter."
-        #                 "Fetch the last message in the conversation using the task context, and provide it as the last_message parameter."
-        #             ),
-        #             # config={
-        #             #     "instructions": role['role_prompt']
-        #             # },
-        #             expected_output="The transcript of the OpenAI Realtime API response.",
-        #             agent=self.conversation_generator,
-        #             context=generate_tasks[-1:] if generate_tasks else [],
-        #             tools=[openai_ws],
-        #             async_execution=True
-        #         )
-        #     else:
-        #         generate_task = Task(
-        #             description=(
-        #                 "Generate the next message in the conversation, based on the chat history: {chat_history}."
-        #                 f"Play role in the conversation: {role['role_name']}."
-        #                 f"Follow these instructions: {role['role_prompt']}."
-        #                 f"Ensure the response is in {test_case['language']} and adheres to the context of the conversation."
-        #             ),
-        #             expected_output="A single conversational message, responding to the previous message.",
-        #             agent=self.conversation_generator,
-        #             context=generate_tasks[-1:] if generate_tasks else [],
-        #         )
-        #     generate_tasks.append(generate_task)
-
-        generate_crew = Crew(
-            agents=[self.conversation_generator],
-            tasks=[tested_generate_task,testing_generate_task],
+        generate_tested_crew = Crew(
+            agents=[self.openai_realtime_agent],
+            tasks=[generate_task_tested],
             process=Process.sequential
         )
 
-        transcript = self._converse(test_case_name, generate_crew, moderate_crew)
+        generate_testing_crew = Crew(
+            agents=[self.conversation_generator],
+            tasks=[generate_task_testing],
+            process=Process.sequential
+        )
 
-        # openai_ws.disconnect()
-        return transcript
-    
-    def _converse(self, test_case_name: str, generate_crew, moderate_crew):
-        logger = self.test_case_loggers[test_case_name]
-        test_case = self.test_case_definitions[test_case_name]
+        moderate_crew = Crew(
+            agents=[self.moderator],
+            tasks=[moderate_task],
+        )
 
         transcript = []
         should_terminate = False
         index_turn = 1
+
         while not should_terminate and index_turn <= test_case['turns']:
-            formatted_transcript = "\n".join(f"- {line}" for line in transcript) if len(transcript) > 0 else "[EMPTY HISTORY]"
             logger.info(f"--- Starting turn {index_turn} ---")
-            result = generate_crew.kickoff({"chat_history": formatted_transcript})
-            [transcript.append(task.raw) for task in result.tasks_output]
+
+            result_tested = generate_tested_crew.kickoff({"chat_history": self._format_transcript(transcript)})
+            transcript.append(result_tested.raw)
+
+            result_testing = generate_testing_crew.kickoff({"chat_history": self._format_transcript(transcript)})
+            transcript.append(result_testing.raw)
+
             logger.debug(f"--- Intermediary conversation transcript ---")
             [logger.debug(line) for line in transcript]
             logger.debug(f"--- End of intermediary conversation transcript ---")
             
             # Moderate message
             logger.info("Moderating conversation")
-            decision = moderate_crew.kickoff({"chat_history": formatted_transcript})
+            decision = moderate_crew.kickoff({"chat_history": self._format_transcript(transcript)})
             logger.info(f"Moderation Decision: {decision}")
             
             # Check if the moderator wants to terminate the conversation
@@ -243,3 +222,6 @@ class TestRunner:
 
         logger.info("Conversation terminated by moderator") if should_terminate else logger.info(f"Conversation completed after {index_turn} turns")
         return transcript
+    
+    def _format_transcript(self, transcript: List[str]) -> str:
+        return "\n".join(f"- {line}" for line in transcript) if len(transcript) > 0 else "[EMPTY HISTORY]"

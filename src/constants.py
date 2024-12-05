@@ -6,4 +6,4 @@ TEST_CASES_DIR='../test-cases'
 OPENAI_REALTIME_BASE_URL = "wss://api.openai.com/v1/realtime"
 OPENAI_REALTIME_DEFAULT_MODEL = "gpt-4o-realtime-preview-2024-10-01"
 OPENAI_REALTIME_DEFAULT_VOICE = "alloy"
-OPENAI_OBSERVED_EVENTS = ['response.done', 'error', 'response.text.done']
+OPENAI_OBSERVED_EVENTS = ['response.done', 'error']

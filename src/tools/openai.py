@@ -7,26 +7,33 @@ import asyncio
 import os
 from constants import LOGGER_MAIN, OPENAI_REALTIME_BASE_URL, OPENAI_REALTIME_DEFAULT_MODEL, OPENAI_REALTIME_DEFAULT_VOICE, OPENAI_OBSERVED_EVENTS
 import logging
+import threading
+import queue
 
 class OpenAIRealtimeInput(BaseModel):
     """Input schema for OpenAIRealtime."""
+    role_name: str = Field(..., description="The name of the role to play in the conversation")
     last_message: str = Field(..., description="The last message in the conversation")
 
-class OpenAIRealtime(BaseTool):
+class OpenAIRealtimeTool(BaseTool):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     name: str = "OpenAI Realtime API Client"
     description: str = "Use the OpenAI Realtime API to generate a message"
-    api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
-    model: str = Field(default=OPENAI_REALTIME_DEFAULT_MODEL, description="OpenAI model to use")
-    voice: str = Field(default=OPENAI_REALTIME_DEFAULT_VOICE, description="Voice to use for the conversation")
-    instructions: str = Field(default="", description="Instructions for the AI")
-    ws: websockets.WebSocketClientProtocol = Field(default=None, description="WebSocket connection")
-    on_response_done: callable = Field(default=None, description="Callback function for response completion")
-    logger: logging.Logger = Field(default=logging.getLogger(LOGGER_MAIN), description="A custom logger instance")
-    session_updated: bool = Field(default=False, description="Flag to indicate if the OpenAI session has been be updated")
-
+    
     args_schema: Type[BaseModel] = OpenAIRealtimeInput
 
+    def _run(self, role_name: str, last_message: str) -> str:
+        """Run the tool synchronously.
+        
+        Args:
+            last_message (str): The last message in the conversation
+            
+        Returns:
+            str: The AI's response
+        """
+        return f"{role_name}: {OpenAIRealtimeClientThread(instructions='', logger=None).send_message(last_message)}"
+
+class OpenAIRealtimeClient():
     def __init__(
         self, 
         api_key: str = None,
@@ -44,15 +51,14 @@ class OpenAIRealtime(BaseTool):
             logger (logging.Logger, optional): Logger instance. Defaults to main logger.
             instructions (str, optional): Instructions to provide to OpenAI.
         """
-        super().__init__(
-            api_key=api_key or os.getenv("OPENAI_API_KEY"),
-            model=model,
-            voice=voice,
-            logger=logger,
-            instructions=instructions
-        )
-
-    async def _connect(self):
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.model = model
+        self.voice = voice
+        self.logger = logger
+        self.instructions = instructions
+        self.session_updated = False
+        self.ws = None
+    async def connect(self):
         """Establish WebSocket connection with OpenAI Realtime API."""
         if not self.ws:
             self.logger.info("Closing websocket connection to OpenAI")
@@ -67,13 +73,13 @@ class OpenAIRealtime(BaseTool):
                 ping_interval=None
             )
 
-    async def _disconnect(self):
+    async def disconnect(self):
         if self.ws:
             self.logger.info("Closing websocket connection to OpenAI")
             self.ws.close()
             self.ws = None
 
-    async def _update_session(self):
+    async def update_session(self):
         if not self.session_updated:
             session_config = {
                 "type": "session.update",
@@ -101,9 +107,10 @@ class OpenAIRealtime(BaseTool):
         else:
             self.logger.info("OpenAI session already up-to-date")
 
-    async def _send_message(self, message: dict):
-        """Send a message through the WebSocket connection."""
-                    # Send the conversation item
+    async def send_message(self, message: dict):
+        """Send a message through the WebSocket connection synchronously."""
+        self.logger.info(f"Sending message to OpenAI: {message}")
+        
         conversation_event = {
             "type": "conversation.item.create",
             "item": {
@@ -119,16 +126,12 @@ class OpenAIRealtime(BaseTool):
         response_event = {
             "type": "response.create",
             "response": {
-                "modalities": ["text"],
-                "instructions": self.instructions,
-                "voice": self.voice
+                "modalities": ["text"]
             }
         }
         await self.ws.send(json.dumps(conversation_event))
         await self.ws.send(json.dumps(response_event))
 
-    async def _process_responses(self) -> str:
-        """Process responses from the WebSocket connection."""
         full_response = ""
         try:
             while True:
@@ -149,11 +152,6 @@ class OpenAIRealtime(BaseTool):
                             self.logger.info(f"Error in the response from OpenAI")
                             full_response = '<Error>'
                         break
-                    if event_type == "response.text.done":
-                        message_content = data.get("text", "")
-                        full_response += message_content
-                        self.logger.info(f"Response from OpenAI: {full_response}")
-                        break
                     elif event_type == "error":
                         error_message = data.get("error", {}).get("message", "Unknown error")
                         self.logger.error(f"Error from OpenAI Realtime API: {error_message}")
@@ -163,37 +161,63 @@ class OpenAIRealtime(BaseTool):
             self.logger.warning("WebSocket connection closed")
             
         return full_response
+    
 
-    async def _run_async(self, last_message: str) -> str:
-        """Run the tool asynchronously."""
-        try:
-            breakpoint()
-            await self._connect()
-            await self._update_session()
-            await self._send_message(last_message)
-            response = await self._process_responses()
-            
-            return response
-            
-        except Exception as e:
-            self.logger.error(f"Error in OpenAI Realtime tool: {str(e)}")
-            raise
-        finally:
-            await self._disconnect()
+class OpenAIRealtimeClientThread:
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls, instructions: str = '', logger: logging.Logger = logging.getLogger(LOGGER_MAIN)):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(OpenAIRealtimeClientThread, cls).__new__(cls)
+                cls._instance.__init__(instructions, logger)  # Initialize the instance
+        return cls._instance
 
-    def _run(self, last_message: str) -> str:
-        """Run the tool synchronously.
+    def __init__(self, instructions: str, logger: logging.Logger):
+        if not hasattr(self, 'initialized'):  # Prevent re-initialization
+            self.message_queue = queue.Queue()
+            self.response_queue = queue.Queue()
+            self.running = True
+            self.thread = threading.Thread(target=self.run)
+            
+            self.thread.start()
+            self.instructions = instructions
+            self.logger = logger
+            self.initialized = True  # Mark as initialized
+
+    def run(self):
+        """Run the asynchronous client in a separate thread."""
+        loop = asyncio.new_event_loop()  # Create a new event loop
+        asyncio.set_event_loop(loop)  # Set the new loop as the current loop
+        loop.run_until_complete(self.async_run())  # Run the async method
+
+    async def async_run(self):
+        """Asynchronous method to handle messages."""
+        self.client = OpenAIRealtimeClient(
+            instructions=self.instructions,
+            logger=self.logger
+        )
+        await self.client.connect()
+        await self.client.update_session()
+
+        while self.running:
+            try:
+                message = self.message_queue.get(timeout=1)  # Wait for a message
+                response = await self.client.send_message(message)  # Call the asynchronous send_message
+                self.response_queue.put(response)  # Put the response in the response queue
+            except queue.Empty:
+                continue  # Continue if no message is received
+
+        await self.client.disconnect()
+
+    def send_message(self, message):
+        """Send a message to the OpenAIRealtime client."""
+        self.message_queue.put(message)  # Put the message in the queue
+        return self.response_queue.get()  # Wait for and return the response
+
+    def stop(self):
+        """Stop the thread."""
+        self.running = False
+        self.thread.join()  # Wait for the thread to finish
         
-        Args:
-            last_message (str): The last message in the conversation
-            
-        Returns:
-            str: The AI's response
-        """
-        return asyncio.run(self._run_async(last_message))
-    
-
-    def disconnect(self):
-        return asyncio.run(self._disconnect())
-
-    
