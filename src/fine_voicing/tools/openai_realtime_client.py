@@ -43,7 +43,8 @@ class OpenAIRealtimeClient():
             self.ws = await websockets.connect(
                 f"{OPENAI_REALTIME_BASE_URL}?model={self.model}",
                 additional_headers=headers,
-                ping_interval=None
+                ping_interval=None,
+                logger=self.logger
             )
 
     async def disconnect(self):

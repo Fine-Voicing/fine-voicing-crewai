@@ -39,7 +39,8 @@ class UltraVoxClient():
 
             join_url = await self._fetch_join_url()
             self.ws = await websockets.connect(
-                join_url
+                join_url,
+                logger=self.logger
             )
 
             set_output_medium = {
