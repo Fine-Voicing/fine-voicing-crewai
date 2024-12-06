@@ -15,14 +15,14 @@ class UltraVoxClient():
         first_speaker: str = ULTRAVOX_FIRST_SPEAKER_USER,
         logger: logging.Logger = logging.getLogger(LOGGER_MAIN)
     ):
-        """Initialize the UltraVox client.
+        """Initialize the Ultravox client.
         
         Args:
-            api_key (str, optional): UltraVox API key. Defaults to environment variable.
+            api_key (str, optional): Ultravox API key. Defaults to environment variable.
             model (str, optional): Model to use. Defaults to ULTRAVOX_DEFAULT_MODEL.
             voice (str, optional): Voice to use. Defaults to ULTRAVOX_DEFAULT_VOICE.
             logger (logging.Logger, optional): Logger instance. Defaults to main logger.
-            instructions (str, optional): System prompt to provide to UltraVox.
+            instructions (str, optional): System prompt to provide to Ultravox.
         """
         self.api_key = api_key or os.getenv("ULTRAVOX_API_KEY")
         self.model = model
@@ -87,7 +87,7 @@ class UltraVoxClient():
 
     async def send_message(self, message: dict):
         """Send a message through the WebSocket connection synchronously."""
-        self.logger.info(f"Sending message to UltraVox: {message}")
+        self.logger.info(f"Sending message to Ultravox: {message}")
 
         conversation_event = {
             "type": "input_text_message",
@@ -104,17 +104,17 @@ class UltraVoxClient():
                     data = json.loads(response)
                     event_type = data.get("type")
                     if event_type in ULTRAVOX_OBSERVED_EVENTS:
-                        self.logger.debug(f"Received JSON response from UltraVox: {data}")
+                        self.logger.debug(f"Received JSON response from Ultravox: {data}")
                         is_final = bool(data.get("final", False))
                         if is_final:
                             full_response = data.get("text", "")
                             break
                     else:
-                        self.logger.debug(f"Received ignored event from UltraVox: {event_type}")
+                        self.logger.debug(f"Received ignored event from Ultravox: {event_type}")
                 except json.JSONDecodeError:
                     self.logger.error("Failed to decode JSON response")
                     data = {}
         except websockets.exceptions.ConnectionClosed:
-            self.logger.warning("WebSocket connection to UltraVox closed")
+            self.logger.warning("WebSocket connection to Ultravox closed")
             
         return full_response
