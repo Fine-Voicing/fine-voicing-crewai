@@ -141,7 +141,7 @@ class TestRunner:
             raise ValueError("No tested role or testing role identified")
 
         provider = Provider(test_case['voice_model']['provider'])
-        openai_thread = VoiceAIModelThread(tested_role['role_prompt'], logger, provider=provider, first_speaker=ULTRAVOX_FIRST_SPEAKER_USER)
+        voiceai_thread = VoiceAIModelThread(tested_role['role_prompt'], logger, provider=provider, first_speaker=ULTRAVOX_FIRST_SPEAKER_USER)
 
         generate_task_tested = Task(
             description=(
@@ -154,7 +154,7 @@ class TestRunner:
             ),
             expected_output=f"The response from the {provider.value} Client tool.",
             agent=self.voice_ai_model_agent,
-            tools=[openai.OpenAIRealtimeTool(result_as_answer=True), ultravox.UltraVoxTool(result_as_answer=True)],
+            tools=[openai.OpenAIRealtimeTool(result_as_answer=True, voiceai_thread=voiceai_thread), ultravox.UltraVoxTool(result_as_answer=True, voiceai_thread=voiceai_thread)],
         )
         generate_task_testing = Task(
             description=(

@@ -1,5 +1,4 @@
 import asyncio
-import queue
 import threading
 import logging
 from enum import Enum
@@ -12,43 +11,51 @@ class Provider(Enum):
     ULTRAVOX = 'ultravox'
 
 class VoiceAIModelThread:
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls, instructions: str = '', logger: logging.Logger = logging.getLogger(LOGGER_MAIN), provider: Provider = Provider.OPENAI, first_speaker: str = ULTRAVOX_FIRST_SPEAKER_USER):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(VoiceAIModelThread, cls).__new__(cls)
-                cls._instance.__init__(instructions, logger, provider, first_speaker)  # Initialize the instance
-        return cls._instance
-    
-    @classmethod
-    def get_instance(self):
-        with self._lock:
-            return self._instance
+    def __init__(self, instructions: str = '', 
+                 logger: logging.Logger = logging.getLogger(LOGGER_MAIN),
+                 provider: Provider = Provider.OPENAI, 
+                 first_speaker: str = ULTRAVOX_FIRST_SPEAKER_USER):
+        self.instructions = instructions
+        self.logger = logger
+        self.provider = provider
+        self.first_speaker = first_speaker
+        self.client = None
+        self._loop = None
+        self._thread = None
+        self._setup_thread()
 
-    def __init__(self, instructions: str, logger: logging.Logger, provider: str, first_speaker: str):
-        if not hasattr(self, 'initialized'):  # Prevent re-initialization
-            self.message_queue = queue.Queue()
-            self.response_queue = queue.Queue()
-            self.running = True
-            self.thread = threading.Thread(target=self.run)
-            
-            self.thread.start()
-            self.instructions = instructions
-            self.logger = logger
-            self.initialized = True  # Mark as initialized
-            self.provider = provider
-            self.first_speaker = first_speaker
+    def _setup_thread(self):
+        """Setup the dedicated thread and event loop for async operations."""
+        self._thread = threading.Thread(target=self._run_event_loop, daemon=True)
+        self._thread.start()
+        # Wait for the loop to be created
+        while self._loop is None:
+            pass
 
-    def run(self):
-        """Run the asynchronous client in a separate thread."""
-        loop = asyncio.new_event_loop()  # Create a new event loop
-        asyncio.set_event_loop(loop)  # Set the new loop as the current loop
-        loop.run_until_complete(self.async_run())  # Run the async method
+    def _run_event_loop(self):
+        """Run the event loop in the dedicated thread."""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
 
-    async def async_run(self):
-        """Asynchronous method to handle messages."""
+    def _run_coroutine(self, coro):
+        """Helper method to run coroutines in the dedicated event loop."""
+        if threading.current_thread() is self._thread:
+            return self._loop.run_until_complete(coro)
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
+
+    def send_message(self, message: str) -> str:
+        """Thread-safe method to send messages."""
+        async def _send():
+            if self.client is None:
+                await self._initialize()
+            return await self.client.send_message(message)
+        
+        return self._run_coroutine(_send())
+
+    async def _initialize(self):
+        """Initialize the AI client."""
         if self.provider == Provider.OPENAI:
             self.client = OpenAIRealtimeClient(
                 instructions=self.instructions,
@@ -65,23 +72,19 @@ class VoiceAIModelThread:
         await self.client.connect()
         await self.client.update_session()
 
-        while self.running:
-            try:
-                message = self.message_queue.get(timeout=1)  # Wait for a message
-                response = await self.client.send_message(message)  # Call the asynchronous send_message
-                self.response_queue.put(response)  # Put the response in the response queue
-            except queue.Empty:
-                continue  # Continue if no message is received
-
-        await self.client.disconnect()
-
-    def send_message(self, message):
-        """Send a message to the OpenAIRealtime client."""
-        self.message_queue.put(message)  # Put the message in the queue
-        return self.response_queue.get()  # Wait for and return the response
-
     def stop(self):
-        """Stop the thread."""
-        self.running = False
-        self.thread.join()  # Wait for the thread to finish
+        """Stop the event loop and clean up."""
+        async def _cleanup():
+            if self.client is not None:
+                await self.client.disconnect()
+                self.client = None
+
+        self._run_coroutine(_cleanup())
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join()
+
+    def __del__(self):
+        """Ensure resources are cleaned up when the instance is garbage collected."""
+        if self._loop is not None and self._loop.is_running():
+            self.stop()
 
