@@ -54,7 +54,7 @@ class TestRunner:
             role="Voice AI Model Agent",
             goal="Use the Voice AI Model to generate conversations.",
             verbose=True,
-            memory=True,
+            memory=False,
             backstory="You specialize in using Voice AI Models to generate conversational messages.",
             logger=logger,
         )
@@ -63,7 +63,7 @@ class TestRunner:
             role="Conversation Voice Simulation Agent",
             goal="Generate conversational messages in a voice conversation with an AI assistant.",
             verbose=True,
-            memory=True,
+            memory=False,
             backstory="You specialize in simulating human-like voice interactions, and refining AI prompts.",
             logger=logger,
         )
@@ -72,7 +72,7 @@ class TestRunner:
             role="Conversation Moderator",
             goal="Evaluate each message in the conversation and decide if the conversation should continue.",
             verbose=True,
-            memory=True,
+            memory=False,
             backstory="You are an expert in evaluating and moderating conversations.",
             logger=logger,
         )
@@ -91,7 +91,7 @@ class TestRunner:
             role="Conversation Roles Generator",
             goal="Generate the roles and instructions for a conversation based on the provided instructions.",
             verbose=True,
-            memory=True,
+            memory=False,
             backstory="You specialize in generating the roles and instructions for a conversation based on the provided instructions.",
             logger=logger,
         )
@@ -168,7 +168,7 @@ class TestRunner:
             ),
             expected_output=f"The response from the {provider.value} Client tool.",
             agent=agents['voice_ai_model_agent'],
-            tools=[voice_ai.OpenAIVoiceAI(result_as_answer=False, voiceai_thread=voiceai_thread), voice_ai.UltravoxVoiceAI(result_as_answer=False, voiceai_thread=voiceai_thread)],
+            tools=[voice_ai.OpenAIVoiceAI(result_as_answer=True, voiceai_thread=voiceai_thread), voice_ai.UltravoxVoiceAI(result_as_answer=True, voiceai_thread=voiceai_thread)],
         )
         generate_task_testing = Task(
             description=(
