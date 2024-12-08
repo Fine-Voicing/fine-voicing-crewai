@@ -22,20 +22,20 @@ class VoiceAIModelThread:
         self.client = None
         self._loop = None
         self._thread = None
+        self._loop_initialized = threading.Event()  # Added for synchronization
         self._setup_thread()
 
     def _setup_thread(self):
         """Setup the dedicated thread and event loop for async operations."""
         self._thread = threading.Thread(target=self._run_event_loop, daemon=True)
         self._thread.start()
-        # Wait for the loop to be created
-        while self._loop is None:
-            pass
+        self._loop_initialized.wait()  # Wait until the event loop is initialized
 
     def _run_event_loop(self):
         """Run the event loop in the dedicated thread."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        self._loop_initialized.set()  # Signal that the loop is initialized
         self._loop.run_forever()
 
     def _run_coroutine(self, coro):
@@ -76,12 +76,24 @@ class VoiceAIModelThread:
         """Stop the event loop and clean up."""
         async def _cleanup():
             if self.client is not None:
-                await self.client.disconnect()
+                try:
+                    await self.client.disconnect()
+                except Exception as e:
+                    self.logger.error(f"Error during client disconnect: {e}")
                 self.client = None
 
-        self._run_coroutine(_cleanup())
+        try:
+            self._run_coroutine(_cleanup())
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join()
+
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
 
     def __del__(self):
         """Ensure resources are cleaned up when the instance is garbage collected."""
