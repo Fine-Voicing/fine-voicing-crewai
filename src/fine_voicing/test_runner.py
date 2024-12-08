@@ -184,31 +184,37 @@ class TestRunner:
             agent=agents['conversation_generator'],
         )
 
-        transcript = self._converse(test_case_name, agents, generate_task_tested, generate_task_testing, moderate_task)
+        tasks = {
+            'generate_task_tested': generate_task_tested,
+            'generate_task_testing': generate_task_testing,
+            'moderate_task': moderate_task
+        }
+
+        transcript = self._converse(test_case_name, agents, tasks)
 
         voiceai_thread.stop()
 
         return transcript
     
-    def _converse(self, test_case_name: str, agents: Dict[str, FineVoicingAgent], generate_task_tested, generate_task_testing, moderate_task):
+    def _converse(self, test_case_name: str, agents: Dict[str, FineVoicingAgent], tasks: Dict[str, Task]):
         logger = self.test_case_loggers[test_case_name]
         test_case = self.test_case_definitions[test_case_name]
         
         generate_tested_crew = Crew(
             agents=[agents['voice_ai_model_agent']],
-            tasks=[generate_task_tested],
+            tasks=[tasks['generate_task_tested']],
             process=Process.sequential
         )
 
         generate_testing_crew = Crew(
             agents=[agents['conversation_generator']],
-            tasks=[generate_task_testing],
+            tasks=[tasks['generate_task_testing']],
             process=Process.sequential
         )
 
         moderate_crew = Crew(
             agents=[agents['moderator']],
-            tasks=[moderate_task],
+            tasks=[tasks['moderate_task']],
         )
 
         transcript = []
