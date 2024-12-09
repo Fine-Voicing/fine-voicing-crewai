@@ -1,7 +1,7 @@
 import logging
 import os
 import json
-from crewai import Agent, Task, Crew, Process
+from crewai import Agent, Task, Crew, Process, LLM
 import asyncio
 from typing import List, Dict
 from fine_voicing.tools.constants import LOGGER_MAIN, TEST_CASES_DIR, LOGGER_TEST_CASE_FILE_PATTERN, ULTRAVOX_FIRST_SPEAKER_USER, EMPTY_HISTORY
@@ -46,8 +46,50 @@ class TestRunner:
             self.logger.info(f"--- Test case: {test_case_name} completed ---")
 
         return transcripts
+    
+    def _setup_llms(self) -> Dict[str, LLM]:
+        def _create_llm(model: str, provider: str, temperature: float = 0.7) -> LLM:
+            model_name = f"{provider}/{model}"
+            match provider:
+                case "openrouter":
+                    base_url = "https://openrouter.ai/api/v1"
+                    api_key = os.getenv("OPENROUTER_API_KEY")
+                case _:
+                    raise ValueError(f"Invalid provider: {provider}")
+            
+            return LLM(
+                model=model_name,
+                temperature=temperature,
+                base_url=base_url,
+                api_key=api_key
+            )
+
+        return {
+            'llama_3_3_70b_instruct': _create_llm(
+                provider="openrouter",
+                model="meta-llama/llama-3.3-70b-instruct"
+                
+            ),
+            'llama_3_2_3b_instruct': _create_llm(
+                provider="openrouter",
+                model="meta-llama/llama-3.2-3b-instruct"
+            ),
+            'qwen_2_5_72b_instruct': _create_llm(
+                provider="openrouter",
+                model="qwen/qwen-2.5-72b-instruct"
+            ),
+            'qwen_2_5_coder_32b_instruct': _create_llm(
+                provider="openrouter",
+                model="qwen/qwen-2.5-coder-32b-instruct"
+            ),
+            'qwen_2_5_7b_instruct': _create_llm(
+                provider="openrouter",
+                model="qwen/qwen-2.5-7b-instruct"
+            )
+        }
 
     def _setup_agents(self, test_case_name: str) -> Dict[str, FineVoicingAgent]:
+        llms = self._setup_llms()
         logger = self.test_case_loggers[test_case_name]
         
         voice_ai_model_agent = FineVoicingAgent(
@@ -57,6 +99,7 @@ class TestRunner:
             memory=False,
             backstory="You specialize in using Voice AI Models to generate conversational messages.",
             logger=logger,
+            # llm=llms['qwen_2_5_72b_instruct']
         )
 
         conversation_generator = FineVoicingAgent(
@@ -66,6 +109,7 @@ class TestRunner:
             memory=False,
             backstory="You specialize in simulating human-like voice interactions, and refining AI prompts.",
             logger=logger,
+            llm=llms['qwen_2_5_72b_instruct'] if os.getenv('OPENROUTER_API_KEY')
         )
 
         moderator = FineVoicingAgent(
@@ -75,17 +119,8 @@ class TestRunner:
             memory=False,
             backstory="You are an expert in evaluating and moderating conversations.",
             logger=logger,
+            llm=llms['qwen_2_5_7b_instruct'] if os.getenv('OPENROUTER_API_KEY')
         )
-
-        return {
-            'voice_ai_model_agent': voice_ai_model_agent,
-            'conversation_generator': conversation_generator,
-            'moderator': moderator
-        }
-
-    def _generate_roles(self, agents: Dict[str, FineVoicingAgent], test_case_name: str) -> dict:
-        logger = self.test_case_loggers[test_case_name]
-        test_case = self.test_case_definitions[test_case_name]
 
         conversation_roles_agent = FineVoicingAgent(
             role="Conversation Roles Generator",
@@ -94,7 +129,19 @@ class TestRunner:
             memory=False,
             backstory="You specialize in generating the roles and instructions for a conversation based on the provided instructions.",
             logger=logger,
+            llm=llms['qwen_2_5_coder_32b_instruct'] if os.getenv('OPENROUTER_API_KEY')
         )
+
+        return {
+            'voice_ai_model_agent': voice_ai_model_agent,
+            'conversation_generator': conversation_generator,
+            'moderator': moderator,
+            'conversation_roles_agent': conversation_roles_agent
+        }
+
+    def _generate_roles(self, agents: Dict[str, FineVoicingAgent], test_case_name: str) -> dict:
+        logger = self.test_case_loggers[test_case_name]
+        test_case = self.test_case_definitions[test_case_name]
         
         generate_roles_task = Task(
             description=(
@@ -102,14 +149,14 @@ class TestRunner:
                 "Based on the instructions, identify the roles (at least two) involved in the conversation."
                 "Based on the instructions, generate a specific set of instructions for each role. Make sure to include the target language in the instructions."
                 "Based on the instructions, identify the role to be tested amongst the roles you've identified."
-                "Format as a JSON array, where each item has keys: role_name, role_prompt, is_tested_role. Output only valid JSON. No markdown or other formatting."
+                "Format as a JSON array, where each item has keys: role_name, role_prompt, is_tested_role. Output only valid JSON. No markdown or other formatting. No root key."
             ),
             expected_output="A JSON object with the roles and their descriptions.",
-            agent=conversation_roles_agent,
+            agent=agents['conversation_roles_agent'],
         )
 
         generate_roles_crew = Crew(
-            agents=[agents['conversation_generator']],
+            agents=[agents['conversation_roles_agent']],
             tasks=[generate_roles_task],
         )
 
@@ -156,47 +203,47 @@ class TestRunner:
 
         provider = Provider(test_case['voice_model']['provider'])
         voiceai_thread = VoiceAIModelThread(tested_role['role_prompt'], logger, provider=provider, first_speaker=ULTRAVOX_FIRST_SPEAKER_USER)
+        try:
+            generate_task_tested = Task(
+                description=(
+                    f"Use the {provider.value} Voice AI API Client tool to generate the next message in the conversation."
+                    f"Provide the role_name parameter of the {provider.value} Voice AI API Client tool: {tested_role['role_name']}"
+                    f"For Ultravox, when the chat history is {EMPTY_HISTORY}, last_message should be a message generated from the role prompt {tested_role['role_prompt']}."
+                    f"Otherwise, provide the last_message parameter of the {provider.value} Voice AI API Client tool from the chat history."
+                    "Chat history, each message is prefixed with a dash (-):"
+                    "{chat_history}"
+                ),
+                expected_output=f"The response from the {provider.value} Client tool.",
+                agent=agents['voice_ai_model_agent'],
+                tools=[voice_ai.OpenAIVoiceAI(result_as_answer=True, voiceai_thread=voiceai_thread), voice_ai.UltravoxVoiceAI(result_as_answer=True, voiceai_thread=voiceai_thread)],
+            )
+            generate_task_testing = Task(
+                description=(
+                    "Generate the next message in the conversation, based on the chat history." 
+                    f"Play role in the conversation: {testing_role['role_name']}."
+                    f"Follow these instructions: {testing_role['role_prompt']}."
+                    f"Prefix all messages with the role name: {testing_role['role_name']}."
+                    f"Ensure the response is in {test_case['language']} and adheres to the context of the conversation."
+                    "Chat history, each message is prefixed with a dash (-):"
+                    "{chat_history}"
+                ),
+                expected_output="A single conversational message, responding to the previous message.",
+                agent=agents['conversation_generator'],
+            )
 
-        generate_task_tested = Task(
-            description=(
-                f"Use the {provider.value} Voice AI API Client tool to generate the next message in the conversation."
-                f"Provide the role_name parameter of the {provider.value} Voice AI API Client tool: {tested_role['role_name']}"
-                f"For Ultravox, when the chat history is {EMPTY_HISTORY}, last_message should be a message generated from the role prompt {tested_role['role_prompt']}."
-                f"Otherwise, provide the last_message parameter of the {provider.value} Voice AI API Client tool from the chat history."
-                "Chat history, each message is prefixed with a dash (-):"
-                "{chat_history}"
-            ),
-            expected_output=f"The response from the {provider.value} Client tool.",
-            agent=agents['voice_ai_model_agent'],
-            tools=[voice_ai.OpenAIVoiceAI(result_as_answer=True, voiceai_thread=voiceai_thread), voice_ai.UltravoxVoiceAI(result_as_answer=True, voiceai_thread=voiceai_thread)],
-        )
-        generate_task_testing = Task(
-            description=(
-                "Generate the next message in the conversation, based on the chat history." 
-                f"Play role in the conversation: {testing_role['role_name']}."
-                f"Follow these instructions: {testing_role['role_prompt']}."
-                f"Prefix all messages with the role name: {testing_role['role_name']}."
-                f"Ensure the response is in {test_case['language']} and adheres to the context of the conversation."
-                "Chat history, each message is prefixed with a dash (-):"
-                "{chat_history}"
-            ),
-            expected_output="A single conversational message, responding to the previous message.",
-            agent=agents['conversation_generator'],
-        )
+            tasks = {
+                'generate_task_tested': generate_task_tested,
+                'generate_task_testing': generate_task_testing,
+                'moderate_task': moderate_task
+            }
 
-        tasks = {
-            'generate_task_tested': generate_task_tested,
-            'generate_task_testing': generate_task_testing,
-            'moderate_task': moderate_task
-        }
-
-        transcript = self._converse(test_case_name, agents, tasks)
-
-        voiceai_thread.stop()
-
+            transcript = await self._converse(test_case_name, agents, tasks)
+        finally:
+            voiceai_thread.stop()
+        
         return transcript
     
-    def _converse(self, test_case_name: str, agents: Dict[str, FineVoicingAgent], tasks: Dict[str, Task]):
+    async def _converse(self, test_case_name: str, agents: Dict[str, FineVoicingAgent], tasks: Dict[str, Task]):
         logger = self.test_case_loggers[test_case_name]
         test_case = self.test_case_definitions[test_case_name]
         
@@ -224,19 +271,19 @@ class TestRunner:
         while not should_terminate and index_turn <= test_case['turns']:
             logger.info(f"--- Starting turn {index_turn} ---")
 
-            result_tested = generate_tested_crew.kickoff({"chat_history": self._format_transcript(transcript)})
+            result_tested = await generate_tested_crew.kickoff_async({"chat_history": self._format_transcript(transcript)})
             transcript.append(result_tested.raw)
 
-            result_testing = generate_testing_crew.kickoff({"chat_history": self._format_transcript(transcript)})
+            result_testing = await generate_testing_crew.kickoff_async({"chat_history": self._format_transcript(transcript)})
             transcript.append(result_testing.raw)
 
-            logger.debug(f"--- Intermediary conversation transcript ---")
+            logger.debug(f"--- Turn {index_turn} conversation transcript ---")
             [logger.debug(line) for line in transcript]
-            logger.debug(f"--- End of intermediary conversation transcript ---")
+            logger.debug(f"--- End of turn {index_turn} conversation transcript ---")
             
             # Moderate message
-            logger.info("Moderating conversation")
-            decision = moderate_crew.kickoff({"chat_history": self._format_transcript(transcript)})
+            logger.info(f"--- Turn {index_turn}: Moderating conversation ---")
+            decision = await moderate_crew.kickoff_async({"chat_history": self._format_transcript(transcript)})
             logger.info(f"Moderation Decision: {decision}")
             
             # Check if the moderator wants to terminate the conversation
@@ -246,7 +293,7 @@ class TestRunner:
             logger.info(f"--- Ending turn {index_turn} ---")
             index_turn += 1
 
-        logger.info("Conversation terminated by moderator") if should_terminate else logger.info(f"Conversation completed after {index_turn} turns")
+        logger.info("Conversation terminated by moderator") if should_terminate else logger.info(f"Conversation completed after {index_turn-1} turns")
         return transcript
     
     def _format_transcript(self, transcript: List[str]) -> str:
