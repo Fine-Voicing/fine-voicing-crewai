@@ -1,0 +1,19 @@
+services:
+  fine-voicing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - PORT=${PORT}
+      - OPENAI_API_KEY=${OPENAI_API_KEY} # Ensure to set this in your .env file
+      - ULTRAVOX_API_KEY=${ULTRAVOX_API_KEY} # Ensure to set this in your .env file
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY} # Ensure to set this in your .env file
+    ports:
+      - "${PORT}:${PORT}"
+    expose:
+      - "${PORT}"
+    volumes:
+      - ./test-cases:/app/test-cases
+      - ./logs:/app/logs
+    user: "${UID:-1000}:${GID:-1000}"  # Use host user's UID/GID for file permissions

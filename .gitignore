@@ -3,3 +3,4 @@ logs/
 test-cases/*
 !test-cases/test.example.json
 __pycache__
+.env.local
