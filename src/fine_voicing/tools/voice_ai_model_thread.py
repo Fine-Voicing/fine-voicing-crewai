@@ -50,7 +50,20 @@ class VoiceAIModelThread:
         async def _send():
             if self.client is None:
                 await self._initialize()
-            return await self.client.send_message(message)
+
+            retries = 0
+            async_sleep = 1
+            response = await self.client.send_message(message)
+            while response == '<Error>' and retries < 3:
+                response = await self.client.send_message(message)
+                self.logger.error(f"Error generating message from Voice AI Model after {retries} retries. Throttling...")
+                retries += 1
+                await asyncio.sleep(async_sleep)
+                async_sleep *= 2
+
+            if retries == 3:
+                raise Exception(f"Error generating message from Voice AI Model after 3 retries")
+            return response
         
         return self._run_coroutine(_send())
 
