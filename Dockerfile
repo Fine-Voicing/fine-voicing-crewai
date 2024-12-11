@@ -26,4 +26,4 @@ COPY src/ ./src/
 ENV PYTHONPATH=/app
 
 # Set default command
-CMD ["python", "src/main.py"] 
+CMD ["python", "src/main.py", "-d"] 
